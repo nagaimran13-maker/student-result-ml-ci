@@ -37,6 +37,20 @@ jobs:
           test -f student_results.csv
           test -f student_result_model.pkl
           test -f metrics.json
+                  - name: Wait for application to become ready
+        run: |
+          for i in {1..15}; do
+            if curl --fail --silent http://localhost:5000/health; then
+              echo "Application is ready."
+              exit 0
+            fi
+            echo "Waiting for application... attempt $i"
+            sleep 2
+          done
+
+          echo "Application did not become ready."
+          docker logs student-result-ml-container
+          exit 1
             - name: Start Docker container
         run: |
           docker run -d \
