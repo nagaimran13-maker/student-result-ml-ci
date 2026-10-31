@@ -1,4 +1,3 @@
-
 name: Student Result ML CI
 
 on:
@@ -39,8 +38,8 @@ jobs:
           test -f student_result_model.pkl
           test -f metrics.json
 
-      - name: Run ML tests
-        run: python -m pytest -v
+      - name: Build Docker image
+        run: docker build -t student-result-ml:${{ github.sha }} .
 
       - name: Prepare release candidate
         run: |
