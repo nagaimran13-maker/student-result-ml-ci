@@ -37,7 +37,12 @@ jobs:
           test -f student_results.csv
           test -f student_result_model.pkl
           test -f metrics.json
-
+            - name: Start Docker container
+        run: |
+          docker run -d \
+            --name student-result-ml-container \
+            -p 5000:5000 \
+            student-result-ml:${{ github.sha }}
       - name: Build Docker image
         run: docker build -t student-result-ml:${{ github.sha }} .
 
