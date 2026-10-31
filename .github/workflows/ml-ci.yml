@@ -1,14 +1,20 @@
-name: Student Result ML CI
+
+name: Student Result ML CI-CD
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  train-test-and-package:
+  train-test-containerize:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,18 +32,26 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pytest
 
-      - name: Train and save model
+      - name: Train student result model
         run: python train_model.py
 
-      - name: Evaluate model and save metrics
+      - name: Evaluate model
         run: python evaluate_model.py
 
-      - name: Verify generated files
+      - name: Run ML tests
+        run: python -m pytest -v
+
+      - name: Build Docker image
+        run: docker build -t student-result-ml:${{ github.sha }} .
+
+      - name: Start Docker container
         run: |
-          test -f student_results.csv
-          test -f student_result_model.pkl
-          test -f metrics.json
-                  - name: Wait for application to become ready
+          docker run -d \
+            --name student-result-ml-container \
+            -p 5000:5000 \
+            student-result-ml:${{ github.sha }}
+
+      - name: Wait for application to become ready
         run: |
           for i in {1..15}; do
             if curl --fail --silent http://localhost:5000/health; then
@@ -51,14 +65,25 @@ jobs:
           echo "Application did not become ready."
           docker logs student-result-ml-container
           exit 1
-            - name: Start Docker container
+
+      - name: Test prediction endpoint
         run: |
-          docker run -d \
-            --name student-result-ml-container \
-            -p 5000:5000 \
-            student-result-ml:${{ github.sha }}
-      - name: Build Docker image
-        run: docker build -t student-result-ml:${{ github.sha }} .
+          response=$(curl --fail --silent --show-error \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"attendance":90,"internal_marks":85,"assignment_marks":88,"previous_score":80}' \
+            http://localhost:5000/predict)
+
+          echo "Prediction response: $response"
+          echo "$response" | grep -q '"prediction"'
+
+      - name: Show Docker container logs
+        if: always()
+        run: docker logs student-result-ml-container || true
+
+      - name: Stop and remove Docker container
+        if: always()
+        run: docker rm -f student-result-ml-container || true
 
       - name: Prepare release candidate
         run: |
