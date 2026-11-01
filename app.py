@@ -7,7 +7,15 @@ import uuid
 
 import joblib
 import pandas as pd
-from flask import Flask, jsonify, request, g
+from flask import Flask, jsonify, request, g, Response
+
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
 
 # -------------------------------
 # 1. Logging Configuration
@@ -25,7 +33,36 @@ logger = logging.getLogger("student-result-api")
 app = Flask(__name__)
 
 # -------------------------------
-# 2. Model Configuration
+# 2. Prometheus Metrics
+# -------------------------------
+
+HTTP_REQUESTS = Counter(
+    "student_api_http_requests_total",
+    "Total HTTP requests received by the Student Result Prediction API",
+    ["method", "path", "status"]
+)
+
+HTTP_LATENCY = Histogram(
+    "student_api_http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["method", "path"]
+)
+
+PREDICTIONS = Counter(
+    "student_api_predictions_total",
+    "Total Student Result Prediction attempts",
+    ["result"]
+)
+
+MODEL_LOADED = Gauge(
+    "student_api_model_loaded",
+    "Whether the Student Result Prediction model is loaded"
+)
+
+MODEL_LOADED.set(0)
+
+# -------------------------------
+# 3. Model Configuration
 # -------------------------------
 
 MODEL_PATH = Path("student_result_model.pkl")
@@ -38,7 +75,7 @@ FEATURES = [
 ]
 
 # -------------------------------
-# 3. Request Logging
+# 4. Request Logging and Metrics
 # -------------------------------
 
 @app.before_request
@@ -51,9 +88,22 @@ def start_request_logging():
 
 @app.after_request
 def finish_request_logging(response):
-    duration_ms = (
-        time.perf_counter() - g.start_time
-    ) * 1000
+
+    duration_seconds = time.perf_counter() - g.start_time
+    duration_ms = duration_seconds * 1000
+
+    # Exclude the /metrics endpoint from API traffic metrics
+    if request.path != "/metrics":
+        HTTP_REQUESTS.labels(
+            method=request.method,
+            path=request.path,
+            status=str(response.status_code)
+        ).inc()
+
+        HTTP_LATENCY.labels(
+            method=request.method,
+            path=request.path
+        ).observe(duration_seconds)
 
     log_level = (
         logging.WARNING
@@ -75,7 +125,7 @@ def finish_request_logging(response):
     return response
 
 # -------------------------------
-# 4. Model Loading
+# 5. Model Loading
 # -------------------------------
 
 def load_model():
@@ -88,6 +138,8 @@ def load_model():
 
         model = joblib.load(MODEL_PATH)
 
+        MODEL_LOADED.set(1)
+
         logger.info(
             "event=model_loaded model_file=%s",
             MODEL_PATH,
@@ -96,11 +148,12 @@ def load_model():
         return model
 
     except Exception:
+        MODEL_LOADED.set(0)
         logger.exception("event=model_load_failed")
         raise
 
 # -------------------------------
-# 5. Health Check API
+# 6. Health Check API
 # -------------------------------
 
 @app.route("/health", methods=["GET"])
@@ -119,7 +172,7 @@ def health_check():
     })
 
 # -------------------------------
-# 6. Prediction API
+# 7. Prediction API
 # -------------------------------
 
 @app.post("/predict")
@@ -163,9 +216,15 @@ def predict():
             for feature in FEATURES
         }])
 
-        model = load_model()
+        try:
+            model = load_model()
+            prediction_code = int(model.predict(sample)[0])
 
-        prediction_code = int(model.predict(sample)[0])
+        except Exception:
+            PREDICTIONS.labels(result="error").inc()
+            raise
+
+        PREDICTIONS.labels(result="success").inc()
 
         prediction = (
             "PASS" if prediction_code == 1 else "FAIL"
@@ -189,7 +248,18 @@ def predict():
         }), 500
 
 # -------------------------------
-# 7. Application Startup
+# 8. Prometheus Metrics API
+# -------------------------------
+
+@app.get("/metrics")
+def metrics():
+    return Response(
+        generate_latest(),
+        mimetype=CONTENT_TYPE_LATEST
+    )
+
+# -------------------------------
+# 9. Application Startup
 # -------------------------------
 
 if __name__ == "__main__":
